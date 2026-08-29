@@ -10,7 +10,7 @@ import urllib.error
 import textwrap
 import statistics
 import re
-APP_VERSION = "v4.1.0-beta.1"
+APP_VERSION = "v4.0.1-alpha.2"
 
 # Per-render computation cache.
 # Streamlit reruns this module top-to-bottom, so these reset cleanly each rerun.
@@ -1776,227 +1776,6 @@ STATE["settings"].setdefault("extra_savings_date", None)
 STATE["settings"].setdefault("recurring_bills", [])
 STATE["settings"].setdefault("payday_anchor", None)
 
-# ---------- Finance OS 4.1 first-run + isolated demo ----------
-
-def _fresh_state():
-    """Return a deep, session-safe Finance OS state with no external connections."""
-    return json.loads(json.dumps(default_state()))
-
-
-def build_demo_state():
-    """Realistic synthetic finances. Never uses Plaid, GitHub, or production state."""
-    today = datetime.today().date()
-    s = _fresh_state()
-    s["_storage"] = "session-demo"
-    s["_demo"] = True
-    settings = s.setdefault("settings", {})
-    settings.update({
-        "baseline_checking": 6200.0,
-        "baseline_savings": 7600.0,
-        "protected_checking_target": 1800.0,
-        "discretionary_reserve_until_payday": 350.0,
-        "emergency_savings_floor": 5000.0,
-        "preferred_savings_floor": 10000.0,
-        "savings_rate": 0.20,
-        "spend_multiplier": 1.0,
-        "smart_income_enabled": True,
-        "payday_anchor": today.isoformat(),
-        "recurring_bills": [
-            {"id":"demo-rent","name":"Rent","amount":1950.0,"due_day":1,"payment_method":"Checking","active":True},
-            {"id":"demo-car","name":"Car payment","amount":620.0,"due_day":15,"payment_method":"Checking","active":True},
-            {"id":"demo-utilities","name":"Utilities","amount":240.0,"due_day":7,"payment_method":"Checking","active":True},
-            {"id":"demo-insurance","name":"Insurance","amount":190.0,"due_day":20,"payment_method":"Checking","active":True},
-            {"id":"demo-phone","name":"Phone + internet","amount":145.0,"due_day":12,"payment_method":"Checking","active":True},
-            {"id":"demo-subs","name":"Subscriptions","amount":72.0,"due_day":25,"payment_method":"Venture","active":True},
-        ],
-        "cards": [
-            {"card":"Venture","balance":2350.0,"limit":10000.0,"due":5,"scheduled":120.0,"action":"Pay down","best_use":"Everyday rewards"},
-            {"card":"Savor","balance":640.0,"limit":6000.0,"due":9,"scheduled":85.0,"action":"Maintain","best_use":"Dining"},
-            {"card":"Amex Blue","balance":310.0,"limit":8000.0,"due":22,"scheduled":60.0,"action":"Maintain","best_use":"Groceries"},
-        ],
-        "card_payment_rules": {
-            "Venture":{"mode":"fixed","amount":120.0,"due_day":5,"autopay":True,"confirmed":True},
-            "Savor":{"mode":"fixed","amount":85.0,"due_day":9,"autopay":True,"confirmed":True},
-            "Amex Blue":{"mode":"fixed","amount":60.0,"due_day":22,"autopay":True,"confirmed":True},
-        },
-    })
-    s["card_overrides"] = {
-        "Venture":{"balance":2350.0,"limit":10000.0},
-        "Savor":{"balance":640.0,"limit":6000.0},
-        "Amex Blue":{"balance":310.0,"limit":8000.0},
-    }
-    nets = [3180, 3420, 3060, 3710, 3290, 3980, 3375, 3560]
-    hist=[]
-    for i,net in enumerate(nets[::-1]):
-        d=today-timedelta(days=14*i)
-        hist.append({"date":d.isoformat(),"net":float(net),"description":"Demo payroll"})
-    s["historical_pay"] = hist
-    s["paychecks"] = {today.isoformat():{"expected":3560.0,"actual":3560.0,"manual":False}}
-    s["goals"] = [
-        {"id":"demo-emergency","name":"Emergency fund","kind":"emergency","target":12000.0,"deadline":(today+timedelta(days=150)).isoformat(),"priority":"Critical","start_date":(today-timedelta(days=75)).isoformat(),"start_amount":5000.0,"current_override":None,"card":None},
-        {"id":"demo-venture","name":"Pay off Venture","kind":"debt","target":0.0,"deadline":(today+timedelta(days=210)).isoformat(),"priority":"High","start_date":(today-timedelta(days=70)).isoformat(),"start_amount":4200.0,"current_override":2350.0,"card":"Venture"},
-        {"id":"demo-trip","name":"Dream trip","kind":"purchase","target":4000.0,"deadline":(today+timedelta(days=260)).isoformat(),"priority":"Lifestyle","start_date":(today-timedelta(days=40)).isoformat(),"start_amount":0.0,"current_override":900.0,"saved":900.0,"card":None},
-    ]
-    tx_specs=[
-        (1,"King Soopers",86.42,"FOOD_AND_DRINK","FOOD_AND_DRINK_GROCERIES"),
-        (2,"Shell",54.18,"TRANSPORTATION","TRANSPORTATION_GAS"),
-        (3,"Chipotle",18.76,"FOOD_AND_DRINK","FOOD_AND_DRINK_RESTAURANT"),
-        (4,"Amazon",72.15,"GENERAL_MERCHANDISE","GENERAL_MERCHANDISE_ONLINE_MARKETPLACE"),
-        (5,"Target",116.30,"GENERAL_MERCHANDISE","GENERAL_MERCHANDISE_SUPERSTORES"),
-        (7,"Spotify",11.99,"ENTERTAINMENT","ENTERTAINMENT_MUSIC_AND_AUDIO"),
-        (8,"Coffee Shop",7.85,"FOOD_AND_DRINK","FOOD_AND_DRINK_COFFEE"),
-        (10,"Gym",39.00,"PERSONAL_CARE","PERSONAL_CARE_GYMS_AND_FITNESS_CENTERS"),
-    ]
-    s["plaid"]["transactions"]=[{
-        "transaction_id":f"demo-{i}","account_id":"demo-checking","date":(today-timedelta(days=days)).isoformat(),
-        "authorized_date":None,"name":name,"merchant_name":name,"amount":amt,"pending":False,
-        "category_primary":primary,"category_detailed":detailed,"category_confidence":"VERY_HIGH",
-        "payment_channel":"in store","website":"","counterparties":[]
-    } for i,(days,name,amt,primary,detailed) in enumerate(tx_specs)]
-    s["plaid"].update({"items":[],"accounts":[],"last_sync":None,"use_live_balances":False,"account_map":{"checking":None,"savings":None,"cards":{}}})
-    return s
-
-
-def build_preview_state(data):
-    """Build a session-only first route from onboarding answers."""
-    today=datetime.today().date()
-    s=_fresh_state(); s["_storage"]="session-preview"; s["_preview"]=True
-    checking=float(data.get("checking",0) or 0); savings=float(data.get("savings",0) or 0)
-    protected=float(data.get("protected",1000) or 0); pay=float(data.get("paycheck",0) or 0)
-    next_pay=data.get("next_payday") or (today+timedelta(days=14))
-    if isinstance(next_pay,str):
-        try: next_pay=date.fromisoformat(next_pay[:10])
-        except Exception: next_pay=today+timedelta(days=14)
-    anchor=next_pay-timedelta(days=14)
-    bills=[]
-    for idx,(name,amount,day) in enumerate([
-        ("Housing",data.get("housing",0),1),("Car / transportation",data.get("car",0),15),
-        ("Utilities",data.get("utilities",0),7),("Insurance",data.get("insurance",0),20),
-        ("Phone + internet",data.get("phone",0),12),("Other recurring",data.get("other_bills",0),25),
-    ]):
-        if float(amount or 0)>0:
-            bills.append({"id":f"onboard-{idx}","name":name,"amount":float(amount),"due_day":day,"payment_method":"Checking","active":True})
-    card_debt=float(data.get("card_debt",0) or 0); card_limit=max(card_debt,float(data.get("card_limit",0) or 0))
-    settings=s["settings"]
-    settings.update({
-        "baseline_checking":checking,"baseline_savings":savings,"protected_checking_target":protected,
-        "discretionary_reserve_until_payday":float(data.get("reserve",0) or 0),"payday_anchor":anchor.isoformat(),
-        "recurring_bills":bills,"savings_rate":{"Aggressive":.30,"Balanced":.20,"Comfortable":.10}.get(data.get("pace"),.20),
-        "smart_income_enabled":True,
-    })
-    if card_debt>0:
-        settings["cards"]=[{"card":"Primary card","balance":card_debt,"limit":card_limit,"due":18,"scheduled":max(35,min(150,card_debt*.03)),"action":"Pay down","best_use":""}]
-        s["card_overrides"]={"Primary card":{"balance":card_debt,"limit":card_limit}}
-        settings["card_payment_rules"]={"Primary card":{"mode":"fixed","amount":max(35,min(150,card_debt*.03)),"due_day":18,"autopay":True,"confirmed":True}}
-    if pay>0:
-        hist=[]
-        for i,mult in enumerate([1.00,.96,1.05,.99,1.08,.94,1.03,1.00]):
-            d=anchor-timedelta(days=14*i)
-            hist.append({"date":d.isoformat(),"net":round(pay*mult,2),"description":"Onboarding income model"})
-        s["historical_pay"]=hist
-        s["paychecks"]={anchor.isoformat():{"expected":pay,"actual":pay,"manual":True}}
-    kind=data.get("goal_kind","savings")
-    goal_name=data.get("goal_name") or {"emergency":"Emergency fund","debt":"Pay off debt","purchase":"Big purchase","savings":"Savings goal"}.get(kind,"My goal")
-    target=float(data.get("goal_target",0) or 0)
-    deadline=data.get("goal_deadline") or today+timedelta(days=180)
-    if isinstance(deadline,str): deadline=date.fromisoformat(deadline[:10])
-    if target>0:
-        start_amount=card_debt if kind=="debt" else (savings if kind in {"savings","emergency"} else 0.0)
-        s["goals"]=[{"id":"first-goal","name":goal_name,"kind":kind,"target":target,"deadline":deadline.isoformat(),"priority":data.get("priority","High"),"start_date":today.isoformat(),"start_amount":start_amount,"current_override":card_debt if kind=="debt" else None,"saved":0.0,"card":"Primary card" if kind=="debt" and card_debt>0 else None}]
-    return s
-
-
-def _welcome_css():
-    st.markdown("""<style>
-    .block-container{max-width:780px;padding-top:3rem}.fos-welcome{padding:34px 30px;border-radius:30px;border:1px solid rgba(255,255,255,.10);background:radial-gradient(circle at 90% 5%,rgba(91,116,255,.25),transparent 32%),linear-gradient(145deg,#101923,#101e34);margin:1rem 0 1.3rem}.fos-mark{font-size:.75rem;letter-spacing:.16em;text-transform:uppercase;opacity:.6}.fos-head{font-size:clamp(2.5rem,7vw,4.6rem);font-weight:860;line-height:1;letter-spacing:-.05em;margin:.7rem 0}.fos-copy{font-size:1.08rem;opacity:.72;max-width:620px;line-height:1.55}.fos-mini{padding:15px 16px;border:1px solid rgba(255,255,255,.08);border-radius:18px;background:rgba(255,255,255,.03);margin:8px 0}.stButton>button{border-radius:15px;min-height:3rem;font-weight:700}</style>""",unsafe_allow_html=True)
-
-
-def render_welcome():
-    _welcome_css()
-    st.markdown("<div class='fos-welcome'><div class='fos-mark'>FINANCE OS</div><div class='fos-head'>Your money needs a route.</div><div class='fos-copy'>Finance OS turns your accounts, bills, income and goals into one living plan — what is safe today, what happens next, and how to get where you want to go.</div></div>",unsafe_allow_html=True)
-    a,b=st.columns(2)
-    with a:
-        st.markdown("<div class='fos-mini'><b>Explore instantly</b><br><span style='opacity:.65'>Use realistic fake finances. No bank connection. Nothing saved.</span></div>",unsafe_allow_html=True)
-        if st.button("Try Finance OS Demo",use_container_width=True,type="primary"):
-            st.session_state.fos_v4_mode="demo"; st.session_state.live_state=build_demo_state(); st.rerun()
-    with b:
-        st.markdown("<div class='fos-mini'><b>Build your route</b><br><span style='opacity:.65'>Answer a few questions and see your first personalized plan.</span></div>",unsafe_allow_html=True)
-        if st.button("Create My Finance OS",use_container_width=True):
-            st.session_state.fos_v4_mode="onboarding"; st.session_state.fos_onboarding_step=0; st.session_state.fos_onboarding={}; st.rerun()
-    st.caption("Demo data is completely synthetic. Real bank connection stays disabled in this public test build.")
-
-
-def render_onboarding():
-    _welcome_css(); data=st.session_state.setdefault("fos_onboarding",{}); step=int(st.session_state.get("fos_onboarding_step",0))
-    titles=["Choose your destination","Where are you today?","How does money come in?","What has to go out?","Choose your comfort level","Your first route"]
-    st.caption(f"SETUP · {min(step+1,6)} OF 6")
-    st.progress(min(1.0,(step+1)/6))
-    st.markdown(f"## {titles[min(step,5)]}")
-    if step==0:
-        with st.form("onboard_goal"):
-            kind=st.selectbox("What matters most right now?",["emergency","debt","savings","purchase"],format_func=lambda x:{"emergency":"Build an emergency fund","debt":"Pay off debt","savings":"Grow savings","purchase":"Save for a purchase"}[x])
-            name=st.text_input("Give the goal a name",value=data.get("goal_name","") or "")
-            target=st.number_input("Target amount",min_value=100.0,value=float(data.get("goal_target",5000) or 5000),step=100.0)
-            deadline=st.date_input("I want to reach it by",value=datetime.today().date()+timedelta(days=180),min_value=datetime.today().date())
-            priority=st.selectbox("Priority",["Critical","High","Normal","Lifestyle"],index=1)
-            if st.form_submit_button("Continue",use_container_width=True,type="primary"):
-                data.update(goal_kind=kind,goal_name=name.strip() or None,goal_target=target,goal_deadline=deadline.isoformat(),priority=priority); st.session_state.fos_onboarding_step=1; st.rerun()
-    elif step==1:
-        with st.form("onboard_now"):
-            checking=st.number_input("Checking balance",min_value=0.0,value=float(data.get("checking",3500) or 0),step=100.0)
-            savings=st.number_input("Savings balance",min_value=0.0,value=float(data.get("savings",2000) or 0),step=100.0)
-            debt=st.number_input("Credit-card debt",min_value=0.0,value=float(data.get("card_debt",0) or 0),step=100.0)
-            limit=st.number_input("Total credit limit",min_value=0.0,value=float(data.get("card_limit",5000) or 0),step=500.0)
-            if st.form_submit_button("Continue",use_container_width=True,type="primary"):
-                data.update(checking=checking,savings=savings,card_debt=debt,card_limit=limit); st.session_state.fos_onboarding_step=2; st.rerun()
-    elif step==2:
-        with st.form("onboard_income"):
-            pay=st.number_input("Typical take-home paycheck",min_value=0.0,value=float(data.get("paycheck",2500) or 0),step=100.0)
-            next_pay=st.date_input("Next payday",value=datetime.today().date()+timedelta(days=14),min_value=datetime.today().date()+timedelta(days=1))
-            st.caption("This beta models biweekly pay first. Variable-income intelligence will learn from connected history later.")
-            if st.form_submit_button("Continue",use_container_width=True,type="primary"):
-                data.update(paycheck=pay,next_payday=next_pay.isoformat()); st.session_state.fos_onboarding_step=3; st.rerun()
-    elif step==3:
-        with st.form("onboard_bills"):
-            c1,c2=st.columns(2); housing=c1.number_input("Housing / rent",min_value=0.0,value=float(data.get("housing",1500) or 0),step=50.0); car=c2.number_input("Car / transportation",min_value=0.0,value=float(data.get("car",400) or 0),step=50.0)
-            c3,c4=st.columns(2); utilities=c3.number_input("Utilities",min_value=0.0,value=float(data.get("utilities",200) or 0),step=25.0); insurance=c4.number_input("Insurance",min_value=0.0,value=float(data.get("insurance",150) or 0),step=25.0)
-            c5,c6=st.columns(2); phone=c5.number_input("Phone + internet",min_value=0.0,value=float(data.get("phone",120) or 0),step=10.0); other=c6.number_input("Other recurring",min_value=0.0,value=float(data.get("other_bills",100) or 0),step=25.0)
-            if st.form_submit_button("Continue",use_container_width=True,type="primary"):
-                data.update(housing=housing,car=car,utilities=utilities,insurance=insurance,phone=phone,other_bills=other); st.session_state.fos_onboarding_step=4; st.rerun()
-    elif step==4:
-        with st.form("onboard_comfort"):
-            protected=st.number_input("Checking cushion I never want to cross",min_value=0.0,value=float(data.get("protected",1000) or 0),step=100.0)
-            reserve=st.number_input("Guilt-free spending reserve until payday",min_value=0.0,value=float(data.get("reserve",250) or 0),step=50.0)
-            pace=st.radio("How should Finance OS pace goals?",["Aggressive","Balanced","Comfortable"],index=1,horizontal=True)
-            if st.form_submit_button("Build my route",use_container_width=True,type="primary"):
-                data.update(protected=protected,reserve=reserve,pace=pace); st.session_state.fos_onboarding_step=5; st.rerun()
-    else:
-        preview=build_preview_state(data)
-        st.markdown("<div class='fos-welcome'><div class='fos-mark'>ROUTE READY</div><div class='fos-head'>You have a starting plan.</div><div class='fos-copy'>Finance OS has enough to build a first cash runway and goal pace. In the full product, connecting your banks replaces these estimates with live balances and transaction history.</div></div>",unsafe_allow_html=True)
-        st.write(f"**Primary goal:** {data.get('goal_name') or data.get('goal_kind','Goal').title()} · ${float(data.get('goal_target',0)):,.0f}")
-        st.write(f"**Safety cushion:** ${float(data.get('protected',0)):,.0f} · **Typical paycheck:** ${float(data.get('paycheck',0)):,.0f}")
-        if st.button("Open My Finance OS",use_container_width=True,type="primary"):
-            st.session_state.live_state=preview; st.session_state.fos_v4_mode="personal_preview"; st.rerun()
-    if step>0 and step<5:
-        if st.button("← Back"):
-            st.session_state.fos_onboarding_step=max(0,step-1); st.rerun()
-    if st.button("Exit setup"):
-        st.session_state.fos_v4_mode="welcome"; st.rerun()
-
-
-if "fos_v4_mode" not in st.session_state:
-    st.session_state.fos_v4_mode = "welcome"
-
-if st.session_state.fos_v4_mode == "welcome":
-    render_welcome(); st.stop()
-if st.session_state.fos_v4_mode == "onboarding":
-    render_onboarding(); st.stop()
-
-if st.session_state.fos_v4_mode == "demo" and not STATE.get("_demo"):
-    STATE = build_demo_state(); st.session_state.live_state = STATE
-elif st.session_state.fos_v4_mode == "personal_preview" and not STATE.get("_preview"):
-    STATE = build_preview_state(st.session_state.get("fos_onboarding", {})); st.session_state.live_state = STATE
-
 # Keep legacy BASE consumers working, but source the values from Finance OS state
 # rather than an external workbook. This is a compatibility bridge while the
 # remaining engine is progressively converted to first-class state helpers.
@@ -2012,7 +1791,6 @@ BASE.update({
     "extra_savings_date": STATE["settings"].get("extra_savings_date"),
     "spend_multiplier": float(STATE["settings"].get("spend_multiplier", 1.0) or 1.0),
     "recurring_bills": list(STATE["settings"].get("recurring_bills", []) or []),
-    "cards": list(STATE["settings"].get("cards", []) or []),
 })
 
 for row in BASE["forecast"]:
@@ -3469,10 +3247,6 @@ def horizon_stats(days):
 
 def save_and_reload(message):
     try:
-        if st.session_state.get("fos_v4_mode") in {"demo", "personal_preview"}:
-            st.session_state.live_state = STATE
-            st.toast("Updated for this test session")
-            st.rerun()
         mode = save_state(STATE, message=message)
         st.session_state.live_state = STATE
         if mode == "github":
@@ -6195,7 +5969,7 @@ def v4_recommendation(plan):
 def v4_add_goal(name,kind,target,deadline,priority,current=None,card=None):
     today=finance_today_v3(); start=current if current is not None else (mapped_cash_balance_v3('savings') if kind in {'savings','emergency'} else 0)
     STATE.setdefault('goals',[]).append({'id':hashlib.sha1(f'{name}-{datetime.now().isoformat()}'.encode()).hexdigest()[:10],'name':name.strip(),'kind':kind,'target':float(target),'deadline':deadline.isoformat(),'priority':priority,'start_date':today.isoformat(),'start_amount':float(start or 0),'current_override':float(current) if current is not None and kind!='debt' else None,'card':card})
-    save_and_reload('Finance OS 4.1: add journey goal')
+    save_and_reload('Finance OS 4.0: add journey goal')
 
 st.markdown('''<style>
 .block-container{max-width:860px;padding-top:1.2rem;padding-bottom:5rem}.v4-hero{padding:24px;border:1px solid #2b3a4c;border-radius:26px;background:linear-gradient(145deg,#111c29,#172748);margin:12px 0 18px}.v4-kicker{font-size:.76rem;letter-spacing:.15em;text-transform:uppercase;color:#96a0ad;margin-bottom:7px}.v4-big{font-size:3.5rem;font-weight:850;line-height:1;color:#fff}.v4-sub{font-size:1.08rem;font-weight:700;color:#fff;margin-top:8px}.v4-muted{color:#9ba6b2;margin-top:7px}.v4-card{padding:18px;border:1px solid #263547;border-radius:20px;background:#0d1723;margin:9px 0}.v4-row{display:flex;justify-content:space-between;gap:14px;align-items:center}.v4-title{font-size:1.08rem;font-weight:800}.v4-score{font-size:2rem;font-weight:850}.v4-progress{height:10px;background:#1e2936;border-radius:999px;overflow:hidden;margin:12px 0}.v4-progress span{display:block;height:100%;background:#5b8cff;border-radius:999px}.v4-section{font-size:1.35rem;font-weight:850;margin:26px 0 9px}.v4-good{color:#62dc9a}.v4-warn{color:#f7c95c}.v4-pill{display:inline-block;border:1px solid #33455a;border-radius:999px;padding:4px 9px;color:#c2cad4;font-size:.78rem}@media(max-width:640px){.block-container{padding-left:1rem;padding-right:1rem}.v4-big{font-size:3.1rem}}</style>''',unsafe_allow_html=True)
@@ -6238,7 +6012,7 @@ elif page=='Journey':
     if goals:
         with st.expander('Manage goals'):
             remove=st.selectbox('Goal',[g['name'] for g in goals]);
-            if st.button('Remove selected goal',use_container_width=True): STATE['goals']=[g for g in STATE.get('goals',[]) if g.get('name')!=remove]; save_and_reload('Finance OS 4.1: remove goal')
+            if st.button('Remove selected goal',use_container_width=True): STATE['goals']=[g for g in STATE.get('goals',[]) if g.get('name')!=remove]; save_and_reload('Finance OS 4.0: remove goal')
 
 elif page=='Plan':
     st.markdown(f"<div class='v4-hero'><div class='v4-kicker'>Cash runway</div><div class='v4-big'>{money(plan['projected_before_payday'])}</div><div class='v4-sub'>Projected checking before {plan['next_payday'].strftime('%b %d')}</div><div class='v4-muted'>{money(plan['checking'])} now − {money(plan['known_cash_out'])} known cash out + {money(plan['known_cash_in'])} cash in</div></div>",unsafe_allow_html=True)
@@ -6269,20 +6043,13 @@ elif page=='Money':
         nm=t.get('merchant_name') or t.get('name') or 'Transaction'; ds=str(t.get('date',''))[:10]; amt=float(t.get('amount',0) or 0); st.markdown(f"<div class='v4-card'><div class='v4-row'><div><b>{nm}</b><div class='v4-muted'>{ds}</div></div><div><b>{money(amt)}</b></div></div></div>",unsafe_allow_html=True)
 
 elif page=='More':
-    session_label = "DEMO · SYNTHETIC DATA" if st.session_state.get("fos_v4_mode") == "demo" else "PREVIEW · SESSION ONLY" if st.session_state.get("fos_v4_mode") == "personal_preview" else "CONTROL ROOM"
-    st.markdown(f"<div class='v4-hero'><div class='v4-kicker'>{session_label}</div><div class='v4-sub'>Settings stay out of everyday money decisions.</div><div class='v4-muted'>This public beta never needs your real banking credentials.</div></div>",unsafe_allow_html=True)
-    if st.button('Exit to welcome',use_container_width=True):
-        st.session_state.fos_v4_mode='welcome'; st.session_state.pop('live_state',None); st.rerun()
-    st.markdown("<div class='v4-section'>Score breakdown</div>",unsafe_allow_html=True)
+    st.markdown("<div class='v4-hero'><div class='v4-kicker'>Control room</div><div class='v4-sub'>Settings stay out of everyday money decisions.</div></div>",unsafe_allow_html=True); st.markdown("<div class='v4-section'>Score breakdown</div>",unsafe_allow_html=True)
     for k,v in score_parts.items(): st.markdown(f"<div class='v4-card'><div class='v4-row'><div>{k}</div><div><b>{v}/10</b></div></div></div>",unsafe_allow_html=True)
     st.markdown("<div class='v4-section'>Accounts</div>",unsafe_allow_html=True)
-    if st.session_state.get("fos_v4_mode") in {"demo", "personal_preview"}:
-        st.info("Bank connection is intentionally disabled in this public test. Demo data is synthetic; preview data lives only in this browser session.")
-    else:
-        if st.button('Refresh bank data',use_container_width=True):
-            try: refresh_all_plaid_v3(); save_and_reload('Finance OS 4.1: refresh banks')
-            except Exception as exc: st.error(f'Bank refresh failed: {exc}')
-        st.caption(f"Plaid: {'connected' if STATE.get('plaid',{}).get('items') else 'not connected'} · Last sync: {STATE.get('plaid',{}).get('last_sync') or 'Never'}")
+    if st.button('Refresh bank data',use_container_width=True):
+        try: refresh_all_plaid_v3(); save_and_reload('Finance OS 4.0: refresh banks')
+        except Exception as exc: st.error(f'Bank refresh failed: {exc}')
+    st.caption(f"Plaid: {'connected' if STATE.get('plaid',{}).get('items') else 'not connected'} · Last sync: {STATE.get('plaid',{}).get('last_sync') or 'Never'}")
     with st.expander('System health & diagnostics'):
         issues=data_health_v3();
         if not issues: st.success('Core checks passed.')
@@ -6295,4 +6062,3 @@ elif page=='More':
             st.caption(f"Rule: {rule.get('mode','unknown')} · Due day: {rule.get('due_day') or 'unknown'} · {'confirmed' if rule.get('confirmed') else 'needs confirmation'}")
 
 st.caption(f'Finance OS {APP_VERSION} · Journey-first · deterministic ledger underneath')
-
